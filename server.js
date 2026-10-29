@@ -195,6 +195,9 @@ app.get('/api/clip', async (req, res) => {
   const videoId = parseVideoId(url);
   if (!videoId) return res.status(400).json({ error: 'Link YouTube tidak valid' });
 
+  const toolErr = checkTools();
+  if (toolErr) return res.status(500).json({ error: toolErr });
+
   const parseTime = (t) => {
     const str = String(t).trim();
     if (!str) return NaN;
@@ -279,10 +282,23 @@ app.post('/api/setup-cookies', express.raw({ type: 'text/plain' }), (req, res) =
 });
 
 // ── GET /api/health ──
+// ── Precheck tool sebelum proses apa pun ──
+function checkTools() {
+  const missing = [];
+  if (!YTDLP_FOUND && !fs.existsSync('/usr/local/bin/yt-dlp') && !fs.existsSync('/usr/bin/yt-dlp')) missing.push('yt-dlp');
+  if (!FFMPEG_FOUND) missing.push('ffmpeg');
+  // validasi jalan-ini lebih teliti: coba exec --version
+  if (missing.length) {
+    return missingMsg(missing[0]);
+  }
+  return null;
+}
+
 app.get('/api/health', (_, res) => {
   res.json({
     status: 'ok',
-    ytDlpOk: true,
+    ytDlpOk: !!YTDLP_FOUND,
+    ffmpegOk: !!FFMPEG_FOUND,
     cookiesFile: fs.existsSync(COOKIES_FILE),
   });
 });
@@ -295,6 +311,9 @@ app.get('/api/auto-clip', async (req, res) => {
   const { url, length } = req.query;
   const videoId = parseVideoId(url);
   if (!videoId) return res.status(400).json({ error: 'Link YouTube tidak valid' });
+
+  const toolErr = checkTools();
+  if (toolErr) return res.status(500).json({ error: toolErr });
 
   const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
   const rawFile = path.join(TEMP_DIR, `auto-${videoId}-${Date.now()}.mp4`);
@@ -341,6 +360,9 @@ app.get('/api/auto-export', async (req, res) => {
   const { url, start, end, vertical } = req.query;
   const videoId = parseVideoId(url);
   if (!videoId) return res.status(400).json({ error: 'Link tidak valid' });
+
+  const toolErr = checkTools();
+  if (toolErr) return res.status(500).json({ error: toolErr });
 
   const startSec = Math.max(0, parseFloat(start) || 0);
   const endSec = parseFloat(end) || startSec + 30;
