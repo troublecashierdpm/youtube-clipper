@@ -8,6 +8,38 @@ const path = require('path');
 const https = require('https');
 const crypto = require('crypto');
 
+// ── Resolve binari: yt-dlp & ffmpeg bisa beda lokasi antar OS / Python setup ──
+function findBinary(name, candidates) {
+  const isWin = process.platform === 'win32';
+  const ext = isWin ? '.exe' : '';
+  for (const dir of candidates) {
+    const full = path.join(dir, name + ext);
+    if (fs.existsSync(full)) return full;
+  }
+  return name; // fallback: biarkan PATH yang resolve
+}
+
+const HOME = process.env.HOME || process.env.USERPROFILE || '';
+const WIN_USSH = process.env.localappdata ? path.join(process.env.localappdata, 'Microsoft', 'WinGet', 'Links') : '';
+const WIN_PY = process.env.APPDATA ? path.join(process.env.APPDATA, 'Python', 'Scripts') : '';
+
+const YTDLP_PATHS = [
+  HOME && path.join(HOME, '.local', 'bin'),
+  WIN_PY,
+  WIN_USSH,
+  '/usr/local/bin', '/usr/bin', '/snap/bin',
+].filter(Boolean);
+
+const FFMPEG_PATHS = [
+  HOME && path.join(HOME, 'bin'),
+  WIN_USSH,
+  '/usr/local/bin', '/usr/bin', '/snap/bin',
+].filter(Boolean);
+
+const YT_DLP = findBinary('yt-dlp', YTDLP_PATHS);
+const FFMPEG = findBinary('ffmpeg', FFMPEG_PATHS);
+console.log(`🔧 yt-dlp → ${YT_DLP}   ffmpeg → ${FFMPEG}`);
+
 const app = express();
 const PORT = process.env.PORT || 3001;
 const TEMP_DIR = path.resolve(__dirname, 'temp');
@@ -27,6 +59,7 @@ function run(cmd, args) {
     });
   });
 }
+
 
 // ── Helper: https GET ──
 function httpsGet(url, headers = {}) {
@@ -74,7 +107,7 @@ app.get('/api/info', async (req, res) => {
     let thumbnail = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
 
     try {
-      const extra = await run('yt-dlp', [
+      const extra = await run(YT_DLP, [
         '--dump-json', '--no-playlist', '--no-warnings',
         '-J', `--cookies=${COOKIES_FILE}`,
         `https://www.youtube.com/watch?v=${videoId}`,
@@ -142,13 +175,13 @@ app.get('/api/clip', async (req, res) => {
       ytUrl,
     ];
 
-    await run('yt-dlp', args);
+    await run(YT_DLP, args);
 
     if (!fs.existsSync(outFile)) throw new Error('Download gagal — file tidak ditemukan');
 
     // 2) Trim via ffmpeg (fast, re-mux only)
     const clipFile = path.join(TEMP_DIR, `${videoId}-clip-${Date.now()}.mp4`);
-    await run('ffmpeg', [
+    await run(FFMPEG, [
       '-y', '-ss', String(startSec),
       '-i', outFile,
       '-t', String(endSec - startSec),
@@ -219,7 +252,7 @@ app.get('/api/auto-clip', async (req, res) => {
     console.log(`[auto-clip] ${videoId} len=${clipLen}s`);
 
     // 1) Download resolusi rendah (audio yang penting utk analisa)
-    await run('yt-dlp', [
+    await run(YT_DLP, [
       '-f', 'b[height<=360]/b/wv',
       '-o', rawFile,
       '--no-playlist', '--no-warnings', '--no-overwrites',
@@ -269,7 +302,7 @@ app.get('/api/auto-export', async (req, res) => {
     console.log(`[auto-export] ${videoId} ${startSec}"s→${endSec}s vertical=${vertical}`);
 
     // 1) download
-    await run('yt-dlp', [
+    await run(YT_DLP, [
       '-f', `bv*[height<=${height}]+ba/b[height<=${height}]/b`,
       '-o', outFile,
       '--no-playlist', '--no-warnings', '--no-overwrites',
@@ -293,7 +326,7 @@ app.get('/api/auto-export', async (req, res) => {
       ffmpegArgs.push('-c', 'copy');
     }
     ffmpegArgs.push('-movflags', '+faststart', cutFile);
-    await run('ffmpeg', ffmpegArgs);
+    await run(FFMPEG, ffmpegArgs);
     fs.unlink(outFile, () => {});
 
     const mode = vertical === '1' ? 'vertical-9x16' : 'horizontal';
