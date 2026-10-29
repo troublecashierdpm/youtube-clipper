@@ -258,6 +258,7 @@
       if (!r.ok) throw new Error(d.error || 'Gagal analisa');
 
       lastAutoResults = d;
+      videoId = d.videoId; // penting! sebelumnya null → link export jadi ?v=null
       renderResults(d.clips);
     } catch (e) {
       showErr(autoError, e.message);
@@ -315,10 +316,10 @@
         </div>
         <div class="clip-why">${clip.reason || '—'}</div>
         <div class="clip-actions">
-          <a class="btn primary" href="/api/auto-export?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${clip.videoId || videoId}`)}&start=${clip.start}&end=${clip.end}&vertical=${vertical.checked ? '1' : '0'}" download>
+          <button class="btn primary btn-dl" data-url="https://www.youtube.com/watch?v=${videoId}" data-start="${clip.start}" data-end="${clip.end}">
             ⬇️ Unduh ${vertical.checked ? '📱 vertikal' : '🖥 landscape'}
-          </a>
-          <a class="btn ghost" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${clip.videoId || videoId}&t=${clip.start}">
+          </button>
+          <a class="btn ghost" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${videoId}&t=${clip.start}s">
             ▶️ Preview
           </a>
         </div>
@@ -326,6 +327,43 @@
       grid.appendChild(card);
     });
   }
+
+  // ── Download handler (delegasi utk semua tombol .btn-dl) ──
+  autoResults.addEventListener('click', async (ev) => {
+    const btn = ev.target.closest('.btn-dl');
+    if (!btn) return;
+
+    const isVertical = vertical.checked ? '1' : '0';
+    const qs = new URLSearchParams({
+      url: btn.dataset.url,
+      start: btn.dataset.start,
+      end: btn.dataset.end,
+      vertical: isVertical,
+    });
+
+    btn.disabled = true;
+    const label = btn.textContent;
+    btn.textContent = '⏳ Memproses…';
+    hideErr(autoError);
+
+    try {
+      const r = await fetch(`/api/auto-export?${qs}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${r.status}`);
+      }
+      await downloadBlob(r);
+      btn.textContent = '✅ Terunduh!';
+    } catch (e) {
+      showErr(autoError, e.message);
+      btn.textContent = '❌ Gagal — coba lagi';
+    } finally {
+      setTimeout(() => {
+        btn.disabled = false;
+        btn.textContent = label;
+      }, 3000);
+    }
+  });
 
   // ── Cookie upload ──
   cookieBtn.addEventListener('click', async () => {
