@@ -455,54 +455,61 @@
     }
   });
 
-  // ── Download handler (delegasi utk semua tombol .btn-dl) ──
+  // ── Download handler (job-based: POST start → polling status) ──
   autoResults.addEventListener('click', async (ev) => {
     const btn = ev.target.closest('.btn-dl');
     if (!btn) return;
 
-    const isVertical = vertical.checked ? '1' : '0';
-    const qs = new URLSearchParams({
-      url: btn.dataset.url,
-      start: btn.dataset.start,
-      end: btn.dataset.end,
-      vertical: isVertical,
-    });
-
     btn.disabled = true;
     const label = btn.textContent;
-    btn.textContent = '⏳ Mengunduh segmen…';
+    btn.textContent = '⏳ Mulai job…';
     hideErr(autoError);
 
-    // Info progres: setelah 20dtk kasih tau masih proses
-    const killer = setTimeout(() => {
-      btn.textContent = '⏳ Masih mengunduh — video panjang butuh 1–2 menit…';
-    }, 20_000);
-
-    // Timeout total 10 menit
-    const ctrl = new AbortController();
-    const killer2 = setTimeout(() => ctrl.abort(), 600_000);
-
     try {
-      const r = await fetch(`/api/auto-export?${qs}`, { signal: ctrl.signal });
-      if (!r.ok) {
-        const j = await r.json().catch(() => ({}));
-        throw new Error(j.error || `HTTP ${r.status}`);
+      const startResp = await fetch('/api/export-start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: btn.dataset.url,
+          start: btn.dataset.start,
+          end: btn.dataset.end,
+          vertical: vertical.checked,
+        }),
+      });
+      if (!startResp.ok) {
+        const j = await startResp.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${startResp.status}`);
       }
-      await downloadBlob(r);
-      btn.textContent = '✅ Terunduh!';
-      clearTimeout(killer);
+      const { id } = await startResp.json();
+
+      // Polling tiap 1.5s sampai done/error
+      while (true) {
+        await new Promise(r => setTimeout(r, 1500));
+        const st = await (await fetch(`/api/export-status/${id}`)).json();
+        const pct = typeof st.percent === 'number' ? Math.max(0, Math.min(100, st.percent)) : 0;
+
+        if (st.status === 'done') {
+          btn.textContent = '⬇️ Simpan file…';
+          const a = document.createElement('a');
+          a.href = st.file.startsWith('/temp/') ? st.file : `/temp/${st.file}`;
+          a.download = st.file.split('/').pop();
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          btn.textContent = '✅ Terunduh!';
+          setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 4000);
+          break;
+        }
+        if (st.status === 'error') throw new Error(st.error || 'Job gagal');
+
+        btn.textContent = st.percent != null && st.stage === 'download'
+          ? `⏳ ${st.label} ${pct}%`
+          : `⏳ ${st.label || st.stage}`;
+      }
     } catch (e) {
-      showErr(autoError, e.name === 'AbortError'
-        ? 'Timeout 10 menit — unduhan terlalu lama. Coba durasi/lebih kecil atau resolusi 720p.'
-        : e.message);
+      showErr(autoError, e.message);
       btn.textContent = '❌ Gagal — coba lagi';
-    } finally {
-      clearTimeout(killer);
-      clearTimeout(killer2);
-      setTimeout(() => {
-        btn.disabled = false;
-        btn.textContent = label;
-      }, 3000);
+      setTimeout(() => { btn.disabled = false; btn.textContent = label; }, 4000);
     }
   });
 

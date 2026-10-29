@@ -5,6 +5,7 @@ const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto');
 
 // ── Resolve binari: yt-dlp & ffmpeg bisa beda lokasi antar OS / Python setup ──
 function findBinary(name) {
@@ -63,16 +64,23 @@ app.use(express.static(path.join(__dirname, 'public')));
 app.use('/temp', express.static(TEMP_DIR));
 
 // ── Jalanin command, stderr ditampilkan LIVE di terminal ──
-function run(cmd, args) {
+// opts.onLine(chunk) — callback utk update progress job
+function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
-    const isWinBin = cmd.endsWith('.exe');
     console.log(`▶️  [proc] ${path.basename(cmd)} ${args.filter(a => !a.includes('cookies')).join(' ').slice(0, 160)}`);
     const p = spawn(cmd, args);
     let acc = '';
+    let buf = '';
     const onData = (d) => {
       acc += d;
       if (acc.length > 60_000) acc = acc.slice(-30_000);
       process.stdout.write(d); // live — penting untuk diagnose 'stuck'
+      if (opts.onLine) {
+        buf += d;
+        const lines = buf.split(/[\r\n]+/);
+        buf = lines.pop();
+        for (const line of lines) if (line.trim()) opts.onLine(line.trim());
+      }
     };
     p.stdout.on('data', onData);
     p.stderr.on('data', onData);
@@ -83,7 +91,7 @@ function run(cmd, args) {
     p.on('close', (code) => {
       if (code === 0) resolve(acc);
       else {
-        const tail = acc.trim().split('\n').filter(Boolean).slice(-3).join(' | ').slice(0, 400);
+        const tail = acc.trim().split(/[\r\n]+/).filter(Boolean).slice(-3).join(' | ').slice(0, 400);
         reject(new Error(`exit ${code}: ${tail}`));
       }
     });
@@ -299,42 +307,69 @@ app.get('/api/auto-clip', async (req, res) => {
   }
 });
 
-// ── GET /api/auto-export — unduh 1 momen jadi clip ──
-app.get('/api/auto-export', async (req, res) => {
-  const { url, start, end, vertical } = req.query;
-  const videoId = parseVideoId(url);
-  if (!videoId) return res.status(400).json({ error: 'Link tidak valid' });
+// ── JOB EXPORT: klik → job di background → UI polling status+percent ──
+const jobs = new Map(); // id → { status, stage, percent, error, file, progressLabel }
 
-  const toolErr = checkTools();
-  if (toolErr) return res.status(500).json({ error: toolErr });
+function updateJob(id, patch) {
+  const job = jobs.get(id);
+  if (job) Object.assign(job, patch);
+}
 
-  const startSec = Math.max(0, parseTime(start) || 0);
-  const endSec = parseTime(end) || startSec + 30;
-  if (endSec <= startSec) return res.status(400).json({ error: 'end harus > start' });
+// Jalankan export di background; update job.errors kalau gagal
+function startExportJob(id, { videoId, startSec, endSec, isVertical }) {
+  (async () => {
+    const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+    const cookies = fs.existsSync(COOKIES_FILE) ? ['--cookies', COOKIES_FILE] : [];
+    const height = isVertical ? '1080' : '720';
+    const base = `ex-${videoId}-${Date.now()}`;
+    const finalName = `clip-${videoId}-${Math.round(startSec)}s-${isVertical ? 'vertical' : 'horizontal'}.mp4`;
 
-  const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
-  const base = `ex-${videoId}-${Date.now()}`;
-  const cookies = fs.existsSync(COOKIES_FILE) ? ['--cookies', COOKIES_FILE] : [];
-  const height = vertical === '1' ? '1080' : '720';
+    updateJob(id, { stage: 'resolve', label: 'Mengambil info video…' });
 
-  try {
-    console.log(`[auto-export] ${videoId} ${startSec}s→${endSec}s vertical=${vertical}`);
-    await run(YT_DLP, [
+    // 1) download segmen
+    const dlArgs = [
       '-f', `bv*[height<=${height}]+ba/b[height<=${height}]/b`,
       '-o', path.join(TEMP_DIR, `${base}.%(ext)s`),
       '--download-sections', `*${toHHMMSS(startSec)}-${toHHMMSS(endSec)}`,
       '--force-keyframes-at-cuts',
-      '--no-playlist', '--no-warnings', '--no-overwrites',
+      '--newline', '--no-playlist', '--no-warnings', '--no-overwrites',
+      '-N', '4',
       ...cookies,
       ytUrl,
-    ]);
-
-    const seg = pickOutput(base);
+    ];
+    updateJob(id, { stage: 'download', label: 'Mengunduh segmen…', percent: 0 });
+    let seg;
+    try {
+      await run(YT_DLP, dlArgs, {
+        onLine(line) {
+          const m = line.match(/\[download\]\s+(\d{1,3}(?:\.\d)?)%/);
+          if (m) updateJob(id, { percent: Math.round(parseFloat(m[1])) });
+        },
+      });
+      seg = pickOutput(base);
+    } catch (eSeg) {
+      console.error('[job]', 'download-sections gagal, fallback full download:', cleanErr(eSeg.message));
+      // Fallback: unduh utuh resolusi kecil → kecil & cepat mana
+      updateJob(id, { stage: 'download', label: 'Fallback: unduh resolusi rendah…', percent: 0 });
+      await run(YT_DLP, [
+        '-f', 'best[height<=480]/best',
+        '-o', path.join(TEMP_DIR, `${base}.%(ext)s`),
+        '--newline', '--no-playlist', '--no-warnings', '--no-overwrites',
+        ...cookies,
+        ytUrl,
+      ], {
+        onLine(line) {
+          const m = line.match(/\[download\]\s+(\d{1,3}(?:\.\d)?)%/);
+          if (m) updateJob(id, { percent: Math.round(parseFloat(m[1])) });
+        },
+      });
+      seg = pickOutput(base);
+    }
     if (!seg) throw new Error('Segmen tidak terunduh');
 
-    // 9:16 perlu re-encode; landscape cukup copy
-    const finalName = `clip-${videoId}-${Math.round(startSec)}s-${vertical === '1' ? 'vertical' : 'horizontal'}.mp4`;
-    if (vertical === '1') {
+    // 2) proses — 9:16 re-encode; landscape copy
+    updateJob(id, { stage: 'process', percent: 100, label: isVertical ? 'Encoding vertikal 9:16…' : 'Mux final…' });
+    if (isVertical) {
       await run(FFMPEG, ['-y', '-i', seg,
         '-vf', 'crop=ih*9/16:ih,scale=720:1280,setsar=1',
         '-c:v', 'libx264', '-preset', 'faster', '-crf', '23',
@@ -346,18 +381,50 @@ app.get('/api/auto-export', async (req, res) => {
     }
     fs.unlink(seg, () => {});
 
-    res.download(path.join(TEMP_DIR, finalName), finalName, () => {
-      setTimeout(() => fs.unlink(path.join(TEMP_DIR, finalName), () => {}), 15 * 60_000);
-    });
-  } catch (e) {
-    console.error('[/api/auto-export]', cleanErr(e.message));
-    res.status(500).json({
+    updateJob(id, { status: 'done', stage: 'ready', percent: 100, file: finalName, label: 'Siap disimpan!' });
+  })().catch(e => {
+    console.error('[job]', id, cleanErr(e.message));
+    updateJob(id, {
+      status: 'error',
+      stage: 'error',
       error: e.message.includes('Sign in')
         ? 'YouTube blokir download (butuh cookies).'
-        : 'Gagal export: ' + cleanErr(e.message),
+        : cleanErr(e.message),
     });
-  }
+  });
+}
+
+// POST /api/export-start — mulai job
+app.post('/api/export-start', express.json(), (req, res) => {
+  const { url, start, end, vertical } = req.body || {};
+  const videoId = parseVideoId(url);
+  if (!videoId) return res.status(400).json({ error: 'Link tidak valid' });
+  const toolErr = checkTools();
+  if (toolErr) return res.status(500).json({ error: toolErr });
+
+  const startSec = Math.max(0, parseTime(start) || 0);
+  const endSec = parseTime(end) || startSec + 30;
+  if (endSec <= startSec) return res.status(400).json({ error: 'end harus > start' });
+
+  const id = crypto.randomUUID().slice(0, 8);
+  jobs.set(id, { status: 'running', stage: 'init', percent: 0, label: 'Inisialisasi…' });
+  startExportJob(id, { videoId, startSec, endSec, isVertical: vertical === true || vertical === '1' });
+
+  res.json({ ok: true, id });
 });
+
+// GET /api/export-status/:id
+app.get('/api/export-status/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job tidak ditemukan' });
+  res.json(job);
+});
+
+// GET /api/auto-export — sekarang hanya penanda status job (dipakai UI polling)
+app.get('/api/auto-export', (req, res) => {
+  return res.status(410).json({ error: 'Gunakan /api/export-start + /api/export-status/:id' });
+});
+
 
 // ── GET /api/thumb — frame JPG di titik start (utk kartu momen) ──
 app.get('/api/thumb', async (req, res) => {
