@@ -247,7 +247,15 @@ app.get('/api/clip', async (req, res) => {
 });
 
 // ── AUTO ──
-const { findBestMoments } = require('./lib/moment-iq');
+const { findBestMoments, downsampleCurve } = require('./lib/moment-iq');
+
+// antrean thumbnail — biar 5 kartu tidak spawn yt-dlp serentak
+let thumbChain = Promise.resolve();
+function withThumbLock(fn) {
+  const next = thumbChain.then(fn, fn);
+  thumbChain = next.catch(() => {});
+  return next;
+}
 
 // ── GET /api/auto-clip — analisa & ranking momen ──
 app.get('/api/auto-clip', async (req, res) => {
@@ -276,10 +284,11 @@ app.get('/api/auto-clip', async (req, res) => {
     const audioFile = pickOutput(base);
     if (!audioFile) throw new Error('Audio tidak terunduh');
 
-    const { moments, duration } = await findBestMoments(audioFile, { clipLen, topN: 5 });
+    const { moments, duration, energy } = await findBestMoments(audioFile, { clipLen, topN: 5 });
     fs.unlink(audioFile, () => {});
 
-    res.json({ videoId, url: ytUrl, duration, clips: moments });
+    const curve = downsampleCurve(energy, 700);
+    res.json({ videoId, url: ytUrl, duration, clips: moments, energy: curve });
   } catch (e) {
     console.error('[/api/auto-clip]', cleanErr(e.message));
     res.status(500).json({
@@ -348,6 +357,49 @@ app.get('/api/auto-export', async (req, res) => {
         : 'Gagal export: ' + cleanErr(e.message),
     });
   }
+});
+
+// ── GET /api/thumb — frame JPG di titik start (utk kartu momen) ──
+app.get('/api/thumb', async (req, res) => {
+  const { url, start } = req.query;
+  const videoId = parseVideoId(url);
+  if (!videoId) return res.status(400).json({ error: 'Link tidak valid' });
+  if (!FFMPEG_FOUND) return res.status(500).json({ error: 'ffmpeg belum terinstall' });
+
+  const startSec = Math.max(0, parseTime(start) || 0);
+  const cookies = fs.existsSync(COOKIES_FILE) ? ['--cookies', COOKIES_FILE] : [];
+
+  // serial via lock
+  const file = await withThumbLock(async () => {
+    const f = path.join(TEMP_DIR, `th-${videoId}-${Math.floor(startSec)}.jpg`);
+    if (fs.existsSync(f)) return f;               // cache per-detik
+    console.log(`[thumb] ${videoId} @${startSec}s`);
+    const base = `th-${videoId}-${Date.now()}`;
+    try {
+      await run(YT_DLP, [
+        '-f', 'bv*[height<=480]/b[height<=480]/b',
+        '-o', path.join(TEMP_DIR, `${base}.%(ext)s`),
+        '--download-sections', `*${toHHMMSS(startSec)}-${toHHMMSS(startSec + 2)}`,
+        '--no-playlist', '--no-warnings', '--no-overwrites',
+        ...cookies,
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ]);
+      const seg = pickOutput(base);
+      if (!seg) throw new Error('seg tidak ada');
+      await run(FFMPEG, ['-y', '-ss', '1', '-i', seg,
+        '-vframes', '1', '-q:v', '5', f]);
+      fs.unlink(seg, () => {});
+    } catch (e) {
+      console.error('[/api/thumb]', cleanErr(e.message));
+      throw e;
+    }
+    return f;
+  }).catch(() => null);
+
+  if (!file || !fs.existsSync(file)) {
+    return res.status(500).json({ error: 'Gagal ambil thumbnail' });
+  }
+  res.sendFile(file);
 });
 
 // ── GET /api/preview — siapkan video preview kecil utk ditampilkan di web ──

@@ -292,6 +292,15 @@
     h.innerHTML = `<h3>🔥 ${clips.length} Momen Terbaik ditemukan</h3><p>Rank AI berdasarkan energi audio: momentum, spike, dan posisi dalam video.</p>`;
     autoResults.appendChild(h);
 
+    // Attention curve
+    if (lastAutoResults?.energy) {
+      const wrap = document.createElement('div');
+      wrap.className = 'curve-wrap';
+      wrap.innerHTML = '<canvas id="curveCanvas"></canvas><small>▲ kurva energi audio — pita warna = momen terpilih (makin terang = score makin tinggi)</small>';
+      autoResults.appendChild(wrap);
+      requestAnimationFrame(() => drawCurve(wrap.querySelector('canvas'), lastAutoResults.energy, lastAutoResults.duration, clips));
+    }
+
     const grid = document.createElement('div');
     grid.className = 'clips-grid';
     autoResults.appendChild(grid);
@@ -305,14 +314,16 @@
       card.style.setProperty('--score-color', color);
 
       card.innerHTML = `
-        <div class="clip-head">
-          <span class="clip-rank" style="background:${color}">#${i + 1}</span>
+        <div class="clip-thumb-wrap">
+          <img class="clip-thumb" loading="lazy"
+            src="/api/thumb?url=${encodeURIComponent('https://www.youtube.com/watch?v=' + videoId)}&start=${clip.start}"
+            onerror="this.closest('.clip-thumb-wrap').classList.add('no-thumb'); this.remove()" alt="thumbnail momen" />
+          <span class="clip-num" style="background:${color}">#${i + 1}</span>
           ${badge ? `<span class="clip-badge">${badge}</span>` : ''}
-          <span class="clip-score" style="color:${color}">${clip.score}/10</span>
         </div>
-        <div class="clip-time">
-          <b>${fmt(clip.start)} → ${fmt(clip.end)}</b>
-          <small>(${fmt(clip.end - clip.start)} durasi)</small>
+        <div class="clip-head">
+          <span class="clip-score" style="color:${color}">${clip.score}/10</span>
+          <span class="clip-time"><b>${fmt(clip.start)} → ${fmt(clip.end)}</b><small>(${fmt(clip.end - clip.start)})</small></span>
         </div>
         <div class="clip-why">${clip.reason || '—'}</div>
         <div class="clip-actions">
@@ -320,15 +331,76 @@
             ⬇️ Unduh ${vertical.checked ? '📱 vertikal' : '🖥 landscape'}
           </button>
           <button class="btn ghost btn-pv" data-url="https://www.youtube.com/watch?v=${videoId}" data-start="${clip.start}" data-end="${clip.end}">
-            🎬 Preview di sini
+            🎬 Preview
           </button>
-          <a class="btn ghost btn-link" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${videoId}&t=${clip.start}s" title="Buka di YouTube">
-            ↗
-          </a>
         </div>
       `;
       grid.appendChild(card);
     });
+  }
+
+  // ── Gambar attention curve di canvas ──
+  function drawCurve(canvas, energyStr, duration, clips) {
+    if (!canvas || !energyStr) return;
+    const data = energyStr.split(',').map(Number);
+    const W = canvas.clientWidth || 640;
+    const H = 120;
+    canvas.width = W * 2;            // retina
+    canvas.height = H * 2;
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.scale(2, 2);
+    const pad = 4;
+
+    // garis dasar
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, W, H);
+
+    // pita highlight momen (chronological)
+    ctx.globalAlpha = 0.22;
+    for (const c of clips) {
+      const x0 = pad + (c.start / duration) * (W - pad * 2);
+      const x1 = pad + (c.end / duration) * (W - pad * 2);
+      ctx.fillStyle = scoreColor(c.score);
+      ctx.fillRect(x0, 0, x1 - x0, H);
+    }
+    ctx.globalAlpha = 1;
+
+    // kurva
+    const n = data.length;
+    ctx.beginPath();
+    ctx.moveTo(pad, H - pad);
+    for (let p = 0; p < n; p++) {
+      const x = pad + (p / (n - 1)) * (W - pad * 2);
+      const y = (H - pad) - (data[p] / 100) * (H - pad * 2);
+      ctx.lineTo(x, y);
+    }
+    ctx.lineTo(W - pad, H - pad);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, 0, 0, H);
+    grad.addColorStop(0, 'rgba(255,0,51,0.55)');
+    grad.addColorStop(1, 'rgba(255,0,51,0.08)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    ctx.beginPath();
+    for (let p = 0; p < n; p++) {
+      const x = pad + (p / (n - 1)) * (W - pad * 2);
+      const y = (H - pad) - (data[p] / 100) * (H - pad * 2);
+      p === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.strokeStyle = '#ff0033';
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    // label durasi
+    ctx.fillStyle = '#888';
+    ctx.font = '10px system-ui';
+    ctx.fillText('0:00', pad + 2, H - 1);
+    const mid = fmt(Math.floor(duration / 2));
+    ctx.fillText(mid, W / 2 - 10, H - 1);
+    ctx.fillText(fmt(duration), W - pad - 24, H - 1);
   }
 
   // ── Preview inline: fetch /api/preview lalu sisipkan <video> di card ──
