@@ -319,14 +319,69 @@
           <button class="btn primary btn-dl" data-url="https://www.youtube.com/watch?v=${videoId}" data-start="${clip.start}" data-end="${clip.end}">
             ⬇️ Unduh ${vertical.checked ? '📱 vertikal' : '🖥 landscape'}
           </button>
-          <a class="btn ghost" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${videoId}&t=${clip.start}s">
-            ▶️ Preview
+          <button class="btn ghost btn-pv" data-url="https://www.youtube.com/watch?v=${videoId}" data-start="${clip.start}" data-end="${clip.end}">
+            🎬 Preview di sini
+          </button>
+          <a class="btn ghost btn-link" target="_blank" rel="noopener" href="https://www.youtube.com/watch?v=${videoId}&t=${clip.start}s" title="Buka di YouTube">
+            ↗
           </a>
         </div>
       `;
       grid.appendChild(card);
     });
   }
+
+  // ── Preview inline: fetch /api/preview lalu sisipkan <video> di card ──
+  autoResults.addEventListener('click', async (ev) => {
+    const pvBtn = ev.target.closest('.btn-pv');
+    if (!pvBtn) return;
+
+    const card = pvBtn.closest('.clip-card');
+    const existing = card.querySelector('.clip-preview');
+    if (existing) {
+      existing.remove(); // toggle close
+      pvBtn.textContent = '🎬 Preview di sini';
+      return;
+    }
+
+    const qs = new URLSearchParams({
+      url: pvBtn.dataset.url,
+      start: pvBtn.dataset.start,
+      end: pvBtn.dataset.end,
+    });
+
+    pvBtn.disabled = true;
+    const label = pvBtn.textContent;
+    pvBtn.textContent = '⏳ Membuat preview…';
+    hideErr(autoError);
+
+    try {
+      const r = await fetch(`/api/preview?${qs}`);
+      if (!r.ok) {
+        const j = await r.json().catch(() => ({}));
+        throw new Error(j.error || `HTTP ${r.status}`);
+      }
+      const d = await r.json();
+      const wrap = document.createElement('div');
+      wrap.className = 'clip-preview';
+      wrap.innerHTML = `
+        <video controls preload="metadata" src="${d.file}" style="width:100%;border-radius:6px;background:#000"></video>
+        <small>Momen ${fmt(+pvBtn.dataset.start)} → ${fmt(+pvBtn.dataset.end)} (360p preview)</small>
+      `;
+      card.insertBefore(wrap, card.querySelector('.clip-actions'));
+      pvBtn.textContent = '✕ Tutup preview';
+      // Mulai load
+      wrap.querySelector('video').play().catch(() => {});
+    } catch (e) {
+      showErr(autoError, e.message);
+      pvBtn.textContent = '❌ Gagal — coba lagi';
+    } finally {
+      pvBtn.disabled = false;
+      if (pvBtn.textContent.startsWith('❌')) {
+        setTimeout(() => { pvBtn.textContent = label; }, 4000);
+      }
+    }
+  });
 
   // ── Download handler (delegasi utk semua tombol .btn-dl) ──
   autoResults.addEventListener('click', async (ev) => {

@@ -365,6 +365,14 @@ footer { text-align: center; margin-top: 24px; }
   padding: 8px 10px;
   font-size: 0.8rem;
 }
+.clip-actions .btn-link { flex: 0 0 auto; }
+
+.clip-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.clip-preview small { color: var(--text-dim); font-size: 0.72rem; text-align: center; }
 
 /* ---- Manual tab originally used .hidden via JS ---- */
 #videoSection[data-hidden="1"] { display: none; }
