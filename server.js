@@ -150,6 +150,40 @@ function checkTools() {
   return missing.length ? missingMsg(missing[0]) : null;
 }
 
+// ── HW encoder auto-detect (GPU) → encoding vertikal 5-20x lebih cepat ──
+const HW_CANDIDATES = ['h264_nvenc', 'h264_videotoolbox', 'h264_qsv', 'h264_v4l2m2m'];
+let hwPromise = null;
+function detectHw() {
+  if (!hwPromise) {
+    hwPromise = (async () => {
+      for (const enc of HW_CANDIDATES) {
+        try {
+          await run(FFMPEG, [
+            '-v', 'error', '-f', 'lavfi', '-i', 'nullsrc=s=128x128:d=0.5',
+            '-frames:v', '1', '-c:v', enc, '-f', 'null', '-',
+          ]);
+          console.log(`⚡ HW encoder aktif: ${enc}`);
+          return enc;
+        } catch (_) { /* coba berikutnya */ }
+      }
+      console.log('⚡ HW encoder: tidak ketemu GPU → libx264 (CPU threads=all)');
+      return null;
+    })();
+  }
+  return hwPromise;
+}
+
+// args encode video sesuai encoder yang tersedia
+function videoEncodeArgs(hw) {
+  switch (hw) {
+    case 'h264_nvenc':        return ['-c:v', 'h264_nvenc', '-preset', 'p2', '-cq', '23'];
+    case 'h264_videotoolbox': return ['-c:v', 'h264_videotoolbox', '-q:v', '65'];
+    case 'h264_qsv':          return ['-c:v', 'h264_qsv', '-global_quality', '23'];
+    case 'h264_v4l2m2m':      return ['-c:v', 'h264_v4l2m2m', '-b:v', '4M'];
+    default:                  return ['-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-threads', '0'];
+  }
+}
+
 // helper: https GET
 function httpsGet(url, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -343,9 +377,11 @@ function makeMonitor(id) {
 // Jalankan export di background; update job.errors kalau gagal
 function startExportJob(id, { videoId, startSec, endSec, isVertical }) {
   (async () => {
+    const hw = await detectHw();
     const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const cookies = fs.existsSync(COOKIES_FILE) ? ['--cookies', COOKIES_FILE] : [];
-    const height = isVertical ? '1080' : '720';
+    // vertikal: source 720p juga cukup (output final 720x1280) → decode jauh lebih enteng
+    const height = 720;
     const base = `ex-${videoId}-${Date.now()}`;
     const finalName = `clip-${videoId}-${Math.round(startSec)}s-${isVertical ? 'vertical' : 'horizontal'}.mp4`;
     const monitor = makeMonitor(id);
@@ -389,22 +425,22 @@ function startExportJob(id, { videoId, startSec, endSec, isVertical }) {
     // Kalau hasil belo bukan mp4 (contoh webm), mux ke mp4? — libx264 pada final dinyala hanya bila vertical.
     const isMp4 = seg.toLowerCase().endsWith('.mp4');
 
-    // ── 2) final: 9:16 → re-encode; landscape → copy (h264+mp4 → copy instan)
-    updateJob(id, { stage: 'process', percent: 100, label: isVertical ? 'Encoding vertikal 9:16…' : 'Mux final…' });
+    // ── 2) final: 9:16 → re-encode (HW jika ada); landscape → copy (h264+mp4 → instan)
+    updateJob(id, { stage: 'process', percent: 100, label: isVertical ? `Encoding vertikal 9:16${hw ? ' (GPU)' : ''}…` : 'Mux final…' });
     const finalArgs = ['-y'];
     if (isVertical) {
       finalArgs.push(
         '-i', seg,
         '-vf', 'crop=ih*9/16:ih,scale=720:1280,setsar=1',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
+        ...videoEncodeArgs(hw),
         '-c:a', 'aac', '-b:a', '128k',
       );
     } else if (!isMp4) {
-      // hasil per-muxed webm (jarang — fallback chain) → re-encode murah 480p
+      // hasil per-mux bukan mp4 (jarang — fallback chain) → re-encode murah 480p
       finalArgs.push(
         '-i', seg,
         '-vf', 'scale=-2:480',
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24',
+        ...videoEncodeArgs(hw),
         '-c:a', 'aac', '-b:a', '128k',
       );
     } else {
