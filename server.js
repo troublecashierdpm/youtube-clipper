@@ -1,0 +1,207 @@
+'use strict';
+
+const express = require('express');
+const { execFile } = require('child_process');
+const { exec } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const https = require('https');
+const crypto = require('crypto');
+
+const app = express();
+const PORT = process.env.PORT || 3001;
+const TEMP_DIR = path.resolve(__dirname, 'temp');
+const COOKIES_FILE = path.resolve(__dirname, 'cookies.txt');
+
+if (!fs.existsSync(TEMP_DIR)) fs.mkdirSync(TEMP_DIR, { recursive: true });
+
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ── Helper: exec command ──
+function run(cmd, args) {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: 600_000 }, (err, stdout, stderr) => {
+      if (err) reject(new Error(`${err.message}\n${stderr}`.slice(0, 800)));
+      else resolve(stdout);
+    });
+  });
+}
+
+// ── Helper: https GET ──
+function httpsGet(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const opts = { headers: { 'User-Agent': 'Mozilla/5.0', ...headers } };
+    https.get(url, opts, (res) => {
+      let d = '';
+      res.on('data', c => d += c);
+      res.on('end', () => resolve(d));
+    }).on('error', reject);
+  });
+}
+
+// ── Parse YouTube video ID ──
+function parseVideoId(url) {
+  const patterns = [
+    /youtu\.be\/([a-zA-Z0-9_-]{11})/,
+    /[?&]v=([a-zA-Z0-9_-]{11})/,
+    /embed\/([a-zA-Z0-9_-]{11})/,
+    /shorts\/([a-zA-Z0-9_-]{11})/,
+  ];
+  for (const p of patterns) {
+    const m = String(url).match(p);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+// ── GET /api/info  (metadata only, no streaming) ──
+app.get('/api/info', async (req, res) => {
+  const { url } = req.query;
+  const videoId = parseVideoId(url);
+  if (!videoId) return res.status(400).json({ error: 'Link YouTube tidak valid' });
+
+  try {
+    // Primary: oEmbed (works from any IP)
+    const raw = await httpsGet(
+      `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+      { 'User-Agent': 'Mozilla/5.0 (compatible)' }
+    );
+    const oembed = JSON.parse(raw);
+
+    // Fallback: try yt-dlp for extra info (duration, etc.)
+    let durationSec = 0;
+    let thumbnail = `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+
+    try {
+      const extra = await run('yt-dlp', [
+        '--dump-json', '--no-playlist', '--no-warnings',
+        '-J', `--cookies=${COOKIES_FILE}`,
+        `https://www.youtube.com/watch?v=${videoId}`,
+      ]);
+      // ignore extra output lines
+      const info = JSON.parse(extra.trim().split('\n').filter(l => l.startsWith('{'))[0] || '{}');
+      durationSec = Math.round(info.duration || 0);
+      if (info.thumbnail) thumbnail = info.thumbnail;
+    } catch (_) {
+      // yt-dlp blocked on this IP — that's OK, we still have oEmbed
+    }
+
+    res.json({
+      videoId,
+      url: `https://www.youtube.com/watch?v=${videoId}`,
+      title: oembed.title || 'Tanpa Judul',
+      channel: oembed.author_name || 'Unknown',
+      thumbnail,
+      duration: durationSec,
+      embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
+      ytdlpBlocked: false, // placeholder for UI feedback
+    });
+  } catch (e) {
+    console.error('[/api/info]', e.message);
+    res.status(500).json({ error: 'Gagal ambil info video. Coba lagi.' });
+  }
+});
+
+// ── GET /api/clip ──
+app.get('/api/clip', async (req, res) => {
+  const { url, start, end } = req.query;
+  const videoId = parseVideoId(url);
+  if (!videoId) return res.status(400).json({ error: 'Link YouTube tidak valid' });
+
+  const parseTime = (t) => {
+    const str = String(t).trim();
+    if (!str) return NaN;
+    const parts = str.split(':').map(Number);
+    let s = 0;
+    for (const p of parts) { if (isNaN(p)) return NaN; s = s * 60 + p; }
+    return s;
+  };
+
+  const startSec = parseTime(start);
+  const endSec   = parseTime(end);
+  if (isNaN(startSec) || isNaN(endSec) || endSec <= startSec) {
+    return res.status(400).json({ error: 'Waktu start/end tidak valid' });
+  }
+
+  const ytUrl   = `https://www.youtube.com/watch?v=${videoId}`;
+  const outFile = path.join(TEMP_DIR, `${videoId}-${Date.now()}.mp4`);
+  const hasCookies = fs.existsSync(COOKIES_FILE);
+  const cookieArg  = hasCookies ? ['--cookies', COOKIES_FILE] : [];
+
+  try {
+    console.log(`[clip] ${videoId}  ${startSec}s → ${endSec}s  cookies=${hasCookies}`);
+
+    // 1) Download via yt-dlp
+    const args = [
+      '-f', 'best[height<=720]/best',
+      '-o', outFile,
+      '--no-playlist', '--no-warnings', '--no-overwrites',
+      '--merge-output-format', 'mp4',
+      ...cookieArg,
+      ytUrl,
+    ];
+
+    await run('yt-dlp', args);
+
+    if (!fs.existsSync(outFile)) throw new Error('Download gagal — file tidak ditemukan');
+
+    // 2) Trim via ffmpeg (fast, re-mux only)
+    const clipFile = path.join(TEMP_DIR, `${videoId}-clip-${Date.now()}.mp4`);
+    await run('ffmpeg', [
+      '-y', '-ss', String(startSec),
+      '-i', outFile,
+      '-t', String(endSec - startSec),
+      '-c', 'copy', '-movflags', '+faststart',
+      clipFile,
+    ]);
+
+    // 3) Cleanup
+    fs.unlink(outFile, () => {});
+
+    const safeTitle = `clip-${videoId}`;
+    res.download(clipFile, `${safeTitle}.mp4`, (err) => {
+      setTimeout(() => {
+        fs.unlink(outFile, () => {});
+        fs.unlink(clipFile, () => {});
+      }, 120_000);
+      if (err && !res.headersSent) res.status(500).json({ error: 'Gagal kirim file' });
+    });
+  } catch (e) {
+    console.error('[/api/clip]', e.message);
+    fs.unlink(outFile, () => {});
+    const blocked = e.message.includes('Sign in to confirm') ||
+                    e.message.includes('Login') ||
+                    e.message.includes('HTTP Error 400');
+    res.status(500).json({
+      error: blocked
+        ? 'Server ini (IP datacenter) diblokir YouTube. Jalankan di komputer lokal, atau-setup cookies YouTube.'
+        : 'Gagal buat clip. Video mungkin age-restricted/private.',
+    });
+  }
+});
+
+// ── POST /api/setup-cookies  (save cookie file) ──
+app.post('/api/setup-cookies', express.raw({ type: 'text/plain' }), (req, res) => {
+  try {
+    fs.writeFileSync(COOKIES_FILE, req.body.toString());
+    const lines = (req.body.toString().match(/\n/g) || []).length;
+    res.json({ ok: true, lines });
+  } catch (e) {
+    res.status(500).json({ error: 'Gagal simpan cookies' });
+  }
+});
+
+// ── GET /api/health ──
+app.get('/api/health', (_, res) => {
+  res.json({
+    status: 'ok',
+    ytDlpOk: true,
+    cookiesFile: fs.existsSync(COOKIES_FILE),
+  });
+});
+
+app.listen(PORT, () => {
+  console.log(`\n🎬 YouTube Clipper jalan di http://localhost:${PORT}\n`);
+  console.log('   Catatan: Jika YouTube blokir download, cek bagian SETUP COOKIES di README.\n');
+});

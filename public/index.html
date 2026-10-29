@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>YouTube Clipper — Potong & Unduh Segmen Video</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="hero">
+      <h1>✂️ YouTube Clipper</h1>
+      <p>Tempel link YouTube, tentukan rentang waktu, unduh segmen videonya.</p>
+    </header>
+
+    <!-- Input URL -->
+    <section class="card" id="inputSection">
+      <div class="row">
+        <input
+          type="url"
+          id="urlInput"
+          placeholder="https://www.youtube.com/watch?v=..."
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <button id="fetchBtn" class="btn primary">Cari Video</button>
+      </div>
+      <div id="inputError" class="error hidden"></div>
+    </section>
+
+    <!-- Video Section -->
+    <section class="card hidden" id="videoSection">
+      <div class="video-preview">
+        <img id="thumb" alt="thumbnail" />
+        <div class="video-meta">
+          <h2 id="title">—</h2>
+          <p id="channel">—</p>
+        </div>
+      </div>
+
+      <div class="player-wrap">
+        <div id="ytPlayer"></div>
+      </div>
+
+      <div class="range-controls">
+        <div class="range-label">
+          <span>⏱ Mulai</span>
+          <strong id="startDisplay">0:00</strong>
+        </div>
+        <input type="range" id="startRange" min="0" max="100" value="0" step="0.1" />
+        <div class="range-label">
+          <span>⏹ Selesai</span>
+          <strong id="endDisplay">0:00</strong>
+        </div>
+        <input type="range" id="endRange" min="0" max="100" value="100" step="0.1" />
+      </div>
+
+      <div class="quick-controls">
+        <button id="markStart" class="btn ghost">⬅ Mark Mulai (I)</button>
+        <button id="markEnd" class="btn ghost">Mark Selesai (O) ➡</button>
+      </div>
+
+      <div class="status-line">
+        <span id="clipLabel">Durasi clip: —</span>
+      </div>
+
+      <button id="clipBtn" class="btn primary big" disabled>✂️ Clip & Unduh</button>
+
+      <div id="progressWrap" class="hidden">
+        <div class="spinner"></div>
+        <span id="progressText">Memproses…</span>
+      </div>
+      <div id="clipError" class="error hidden"></div>
+    </section>
+
+    <!-- Cookie Setup -->
+    <section class="card cookie-card">
+      <details>
+        <summary>⚙️ Video gagal diunduh? Setup cookies YouTube</summary>
+        <p>
+          YouTube memblokir akses dari server cloud. Upload file <code>cookies.txt</code>
+          dari browser kamu (ekstensi <i>Get cookies.txt</i>), atau jalankan
+          <code>node setup-cookies.js</code> di terminal.
+        </p>
+        <div class="row">
+          <input type="file" id="cookieInput" accept=".txt" />
+          <button id="cookieBtn" class="btn ghost">Upload</button>
+        </div>
+        <div id="cookieStatus"></div>
+      </details>
+    </section>
+
+    <footer>
+      <p class="hint">
+        💡 Tips: klik play di player, lalu saat momen yang diinginkan muncul, tekan
+        <b>I</b> untuk mark mulai, <b>O</b> untuk mark selesai.
+      </p>
+    </footer>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

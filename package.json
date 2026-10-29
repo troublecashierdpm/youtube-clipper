@@ -1,0 +1,13 @@
+{
+  "name": "youtube-clipper",
+  "version": "1.0.0",
+  "description": "Website untuk clip video dari link YouTube",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "puppeteer": "^25.16.0"
+  }
+}
