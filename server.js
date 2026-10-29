@@ -323,9 +323,9 @@ app.get('/api/auto-clip', async (req, res) => {
   try {
     console.log(`[auto-clip] ${videoId} len=${clipLen}s`);
 
-    // 1) Download resolusi rendah (audio yang penting utk analisa)
+    // 1) Download AUDIO-ONLY (moment-iq cuma butuh audio; lebih cepat & kecil)
     await run(YT_DLP, [
-      '-f', 'b[height<=360]/b/wv',
+      '-f', 'bestaudio[ext=m4a]/bestaudio/best',
       '-o', rawFile,
       '--no-playlist', '--no-warnings', '--no-overwrites',
       ...(['--cookies', COOKIES_FILE].filter(() => hasCookies)),
