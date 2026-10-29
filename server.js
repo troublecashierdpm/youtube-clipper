@@ -85,7 +85,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // ── Helper: exec command ──
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: 600_000 }, (err, stdout, stderr) => {
+    execFile(cmd, args, { timeout: 600_000, maxBuffer: 32 * 1024 * 1024 }, (err, stdout, stderr) => {
       if (err) {
         if (err.code === 'ENOENT') {
           return reject(new Error(
@@ -221,35 +221,31 @@ app.get('/api/clip', async (req, res) => {
   try {
     console.log(`[clip] ${videoId}  ${startSec}s → ${endSec}s  cookies=${hasCookies}`);
 
-    // 1) Download via yt-dlp
-    const args = [
-      '-f', 'best[height<=720]/best',
+    // 1) Download HANYA bagian yang dibutuhkan (bukan seluruh video)
+    await run(YT_DLP, [
+      '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
       '-o', outFile,
+      '--download-sections', `*${toHHMMSS(startSec)}-${toHHMMSS(endSec)}`,
+      '--force-keyframes-at-cuts',
       '--no-playlist', '--no-warnings', '--no-overwrites',
       '--merge-output-format', 'mp4',
       ...cookieArg,
       ytUrl,
-    ];
+    ]);
 
-    await run(YT_DLP, args);
+    if (!fs.existsSync(outFile)) throw new Error('Segmen tidak terunduh — coba rentang lain');
 
-    if (!fs.existsSync(outFile)) throw new Error('Download gagal — file tidak ditemukan');
-
-    // 2) Trim via ffmpeg (fast, re-mux only)
+    // 2) Mux ulang ringan: faststart, exact stream copy
     const clipFile = path.join(TEMP_DIR, `${videoId}-clip-${Date.now()}.mp4`);
     await run(FFMPEG, [
-      '-y', '-ss', String(startSec),
-      '-i', outFile,
-      '-t', String(endSec - startSec),
+      '-y', '-i', outFile,
       '-c', 'copy', '-movflags', '+faststart',
       clipFile,
     ]);
-
-    // 3) Cleanup
     fs.unlink(outFile, () => {});
 
     const safeTitle = `clip-${videoId}`;
-    res.download(clipFile, `${safeTitle}.mp4`, (err) => {
+    res.download(clipFile, `${safeTitle}-${Math.round(startSec)}s.mp4`, (err) => {
       setTimeout(() => {
         fs.unlink(outFile, () => {});
         fs.unlink(clipFile, () => {});
@@ -257,7 +253,7 @@ app.get('/api/clip', async (req, res) => {
       if (err && !res.headersSent) res.status(500).json({ error: 'Gagal kirim file' });
     });
   } catch (e) {
-    console.error('[/api/clip]', e.message);
+    console.error('[/api/clip]', cleanErr(e.message));
     fs.unlink(outFile, () => {});
     const blocked = e.message.includes('Sign in to confirm') ||
                     e.message.includes('Login') ||
@@ -265,10 +261,22 @@ app.get('/api/clip', async (req, res) => {
     res.status(500).json({
       error: blocked
         ? 'Server ini (IP datacenter) diblokir YouTube. Jalankan di komputer lokal, atau-setup cookies YouTube.'
-        : 'Gagal buat clip. Video mungkin age-restricted/private.',
+        : 'Gagal buat clip: ' + cleanErr(e.message),
     });
   }
 });
+
+// helper: detik → "HH:MM:SS" utk --download-sections
+function toHHMMSS(sec) {
+  const s = Math.max(0, Math.floor(Number(sec) || 0));
+  return [Math.floor(s / 3600), Math.floor((s % 3600) / 60), s % 60]
+    .map(n => String(n).padStart(2, '0')).join(':');
+}
+
+// helper: buang banner/stack panjang dari stderr
+function cleanErr(msg) {
+  return String(msg).trim().split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 220);
+}
 
 // ── POST /api/setup-cookies  (save cookie file) ──
 app.post('/api/setup-cookies', express.raw({ type: 'text/plain' }), (req, res) => {
@@ -374,21 +382,25 @@ app.get('/api/auto-export', async (req, res) => {
   const height = vertical === '1' ? '1080' : '720';
 
   try {
-    console.log(`[auto-export] ${videoId} ${startSec}"s→${endSec}s vertical=${vertical}`);
+    console.log(`[auto-export] ${videoId} ${startSec}s→${endSec}s vertical=${vertical}`);
 
-    // 1) download
+    // 1) Download HANYA segmen target
     await run(YT_DLP, [
       '-f', `bv*[height<=${height}]+ba/b[height<=${height}]/b`,
       '-o', outFile,
+      '--download-sections', `*${toHHMMSS(startSec)}-${toHHMMSS(endSec)}`,
+      '--force-keyframes-at-cuts',
       '--no-playlist', '--no-warnings', '--no-overwrites',
       '--merge-output-format', 'mp4',
       ...(['--cookies', COOKIES_FILE].filter(() => hasCookies)),
       ytUrl,
     ]);
 
-    // 2) cut — 9:16 needs reencode, landscape copy
+    if (!fs.existsSync(outFile)) throw new Error('Segmen tidak terunduh — coba lagi');
+
+    // 2) Potong presisi — 9:16 perlu re-encode, landscape copy
     const cutFile = path.join(TEMP_DIR, `cut-${videoId}-${Date.now()}.mp4`);
-    const ffmpegArgs = ['-y', '-ss', String(startSec), '-i', outFile,
+    const ffmpegArgs = ['-y', '-ss', '0', '-i', outFile,
       '-t', String(endSec - startSec)];
 
     if (vertical === '1') {
@@ -413,12 +425,12 @@ app.get('/api/auto-export', async (req, res) => {
       if (err && !res.headersSent) res.status(500).json({ error: 'Gagal kirim file' });
     });
   } catch (e) {
-    console.error('[/api/auto-export]', e.message);
+    console.error('[/api/auto-export]', cleanErr(e.message));
     fs.unlink(outFile, () => {});
     res.status(500).json({
       error: e.message.includes('Sign in')
         ? 'Diblokir YouTube — IP datacenter. Jalankan lokal / upload cookies.'
-        : 'Gagal export: ' + e.message.slice(0, 200),
+        : 'Gagal export: ' + cleanErr(e.message),
     });
   }
 });

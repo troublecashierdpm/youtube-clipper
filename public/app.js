@@ -343,21 +343,35 @@
 
     btn.disabled = true;
     const label = btn.textContent;
-    btn.textContent = '⏳ Memproses…';
+    btn.textContent = '⏳ Mengunduh segmen…';
     hideErr(autoError);
 
+    // Info progres: setelah 20dtk kasih tau masih proses
+    const killer = setTimeout(() => {
+      btn.textContent = '⏳ Masih mengunduh — video panjang butuh 1–2 menit…';
+    }, 20_000);
+
+    // Timeout total 10 menit
+    const ctrl = new AbortController();
+    const killer2 = setTimeout(() => ctrl.abort(), 600_000);
+
     try {
-      const r = await fetch(`/api/auto-export?${qs}`);
+      const r = await fetch(`/api/auto-export?${qs}`, { signal: ctrl.signal });
       if (!r.ok) {
         const j = await r.json().catch(() => ({}));
         throw new Error(j.error || `HTTP ${r.status}`);
       }
       await downloadBlob(r);
       btn.textContent = '✅ Terunduh!';
+      clearTimeout(killer);
     } catch (e) {
-      showErr(autoError, e.message);
+      showErr(autoError, e.name === 'AbortError'
+        ? 'Timeout 10 menit — unduhan terlalu lama. Coba durasi/lebih kecil atau resolusi 720p.'
+        : e.message);
       btn.textContent = '❌ Gagal — coba lagi';
     } finally {
+      clearTimeout(killer);
+      clearTimeout(killer2);
       setTimeout(() => {
         btn.disabled = false;
         btn.textContent = label;
