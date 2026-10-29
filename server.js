@@ -223,7 +223,7 @@ app.get('/api/clip', async (req, res) => {
   try {
     console.log(`[clip] ${videoId} ${startSec}s → ${endSec}s`);
     await run(YT_DLP, [
-      '-f', 'bv*[height<=720]+ba/b[height<=720]/b',
+      '-f', 'bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/b[height<=720]/b',
       '-o', path.join(TEMP_DIR, `${base}.%(ext)s`),
       '--download-sections', `*${toHHMMSS(startSec)}-${toHHMMSS(endSec)}`,
       '--force-keyframes-at-cuts',
@@ -315,6 +315,31 @@ function updateJob(id, patch) {
   if (job) Object.assign(job, patch);
 }
 
+// parseLine: update job dari output yt-dlp
+function makeMonitor(id) {
+  return (line) => {
+    const pct = line.match(/\[download\]\s+(\d{1,3}(?:\.\d)?)%/);
+    if (pct) {
+      updateJob(id, { stage: 'download', percent: Math.round(parseFloat(pct[1])) });
+      return;
+    }
+    if (line.startsWith('frame=')) {
+      const t = line.match(/time=(\d{2}:\d{2}:\d{2})/);
+      const fps = line.match(/fps=\s*(\d+\.\d)/);
+      updateJob(id, {
+        stage: 'process',
+        label: `Memotong/menggabung (ffmpeg)… ${t ? t[1] : ''} @${fps ? fps[1] : '?'}fps`,
+      });
+      return;
+    }
+    if (line.includes('[Merger]') || line.includes('Merging formats')) {
+      updateJob(id, { stage: 'merge', label: 'Menggabung video + audio…' });
+    } else if (line.includes('[FixupM') || line.includes('Correcting container')) {
+      updateJob(id, { stage: 'fixup', label: 'Merapikan kontainer…' });
+    }
+  };
+}
+
 // Jalankan export di background; update job.errors kalau gagal
 function startExportJob(id, { videoId, startSec, endSec, isVertical }) {
   (async () => {
@@ -323,62 +348,70 @@ function startExportJob(id, { videoId, startSec, endSec, isVertical }) {
     const height = isVertical ? '1080' : '720';
     const base = `ex-${videoId}-${Date.now()}`;
     const finalName = `clip-${videoId}-${Math.round(startSec)}s-${isVertical ? 'vertical' : 'horizontal'}.mp4`;
+    const monitor = makeMonitor(id);
 
     updateJob(id, { stage: 'resolve', label: 'Mengambil info video…' });
 
-    // 1) download segmen
+    // ── PENTING: hanya ambil H.264 (avc1) + AAC — kontainernya match
+    //    → tanpa re-encode saat merge (AV1+Opus memaksa transcode VP9 2fps = 25 menit!)
     const dlArgs = [
-      '-f', `bv*[height<=${height}]+ba/b[height<=${height}]/b`,
+      '-f', `bv*[vcodec^=avc1][height<=${height}]+ba[acodec^=mp4a]/b[height<=${height}][vcodec^=avc1]/bv*[height<=${height}]+ba/b[height<=${height}]/b`,
       '-o', path.join(TEMP_DIR, `${base}.%(ext)s`),
       '--download-sections', `*${toHHMMSS(startSec)}-${toHHMMSS(endSec)}`,
       '--force-keyframes-at-cuts',
+      '--merge-output-format', 'mp4',
       '--newline', '--no-playlist', '--no-warnings', '--no-overwrites',
       '-N', '4',
       ...cookies,
       ytUrl,
     ];
-    updateJob(id, { stage: 'download', label: 'Mengunduh segmen…', percent: 0 });
+    updateJob(id, { stage: 'download', label: 'Mengunduh segmen (H.264, tanpa transcode)…', percent: 0 });
     let seg;
     try {
-      await run(YT_DLP, dlArgs, {
-        onLine(line) {
-          const m = line.match(/\[download\]\s+(\d{1,3}(?:\.\d)?)%/);
-          if (m) updateJob(id, { percent: Math.round(parseFloat(m[1])) });
-        },
-      });
+      await run(YT_DLP, dlArgs, { onLine: monitor });
       seg = pickOutput(base);
     } catch (eSeg) {
+      if (String(eSeg.message).includes('ENOENT')) throw eSeg;
       console.error('[job]', 'download-sections gagal, fallback full download:', cleanErr(eSeg.message));
-      // Fallback: unduh utuh resolusi kecil → kecil & cepat mana
-      updateJob(id, { stage: 'download', label: 'Fallback: unduh resolusi rendah…', percent: 0 });
+      // Fallback: best pre-merged 360p (h264+aac, cepat, tanpa merge) → cut manual
+      updateJob(id, { stage: 'download', label: 'Mengunduh 360p utuh (fallback)…', percent: 0 });
       await run(YT_DLP, [
-        '-f', 'best[height<=480]/best',
+        '-f', 'best[height<=360]/best',
         '-o', path.join(TEMP_DIR, `${base}.%(ext)s`),
         '--newline', '--no-playlist', '--no-warnings', '--no-overwrites',
         ...cookies,
         ytUrl,
-      ], {
-        onLine(line) {
-          const m = line.match(/\[download\]\s+(\d{1,3}(?:\.\d)?)%/);
-          if (m) updateJob(id, { percent: Math.round(parseFloat(m[1])) });
-        },
-      });
+      ], { onLine: monitor });
       seg = pickOutput(base);
     }
     if (!seg) throw new Error('Segmen tidak terunduh');
 
-    // 2) proses — 9:16 re-encode; landscape copy
+    // Kalau hasil belo bukan mp4 (contoh webm), mux ke mp4? — libx264 pada final dinyala hanya bila vertical.
+    const isMp4 = seg.toLowerCase().endsWith('.mp4');
+
+    // ── 2) final: 9:16 → re-encode; landscape → copy (h264+mp4 → copy instan)
     updateJob(id, { stage: 'process', percent: 100, label: isVertical ? 'Encoding vertikal 9:16…' : 'Mux final…' });
+    const finalArgs = ['-y'];
     if (isVertical) {
-      await run(FFMPEG, ['-y', '-i', seg,
+      finalArgs.push(
+        '-i', seg,
         '-vf', 'crop=ih*9/16:ih,scale=720:1280,setsar=1',
-        '-c:v', 'libx264', '-preset', 'faster', '-crf', '23',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23',
         '-c:a', 'aac', '-b:a', '128k',
-        '-movflags', '+faststart', path.join(TEMP_DIR, finalName)]);
+      );
+    } else if (!isMp4) {
+      // hasil per-muxed webm (jarang — fallback chain) → re-encode murah 480p
+      finalArgs.push(
+        '-i', seg,
+        '-vf', 'scale=-2:480',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24',
+        '-c:a', 'aac', '-b:a', '128k',
+      );
     } else {
-      await run(FFMPEG, ['-y', '-i', seg, '-c', 'copy',
-        '-movflags', '+faststart', path.join(TEMP_DIR, finalName)]);
+      finalArgs.push('-i', seg, '-c', 'copy');
     }
+    finalArgs.push('-movflags', '+faststart', path.join(TEMP_DIR, finalName));
+    await run(FFMPEG, finalArgs, { onLine: monitor });
     fs.unlink(seg, () => {});
 
     updateJob(id, { status: 'done', stage: 'ready', percent: 100, file: finalName, label: 'Siap disimpan!' });
@@ -490,7 +523,7 @@ app.get('/api/preview', async (req, res) => {
     console.log(`[preview] ${videoId} ${startSec}s→${endSec}s`);
     // 360p cukup untuk preview → cepet
     await run(YT_DLP, [
-      '-f', 'bv*[height<=360]+ba/b[height<=360]/b',
+      '-f', 'bv*[vcodec^=avc1][height<=360]+ba[acodec^=mp4a]/b[height<=360]/b',
       '-o', path.join(TEMP_DIR, `${base}.%(ext)s`),
       '--download-sections', `*${toHHMMSS(startSec)}-${toHHMMSS(endSec)}`,
       '--force-keyframes-at-cuts',
