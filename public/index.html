@@ -3,15 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>YouTube Clipper — Potong & Unduh Segmen Video</title>
+  <title>YouTube Clipper — Cut AI + Manual</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <main class="container">
     <header class="hero">
       <h1>✂️ YouTube Clipper</h1>
-      <p>Tempel link YouTube, tentukan rentang waktu, unduh segmen videonya.</p>
+      <p>Clip manual atau biarkan <b>AI cari momen terbaik</b> buat kamu.</p>
     </header>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="manual">✂️ Clip Manual</button>
+      <button class="tab" data-tab="auto">⚡ Auto Clip (AI)</button>
+    </div>
 
     <!-- Input URL -->
     <section class="card" id="inputSection">
@@ -23,15 +29,44 @@
           autocomplete="off"
           spellcheck="false"
         />
-        <button id="fetchBtn" class="btn primary">Cari Video</button>
       </div>
       <div id="inputError" class="error hidden"></div>
+      <div class="row action-row">
+        <button id="fetchBtn" class="btn primary hidden">Cari Video</button>
+        <button id="autoBtn" class="btn primary accent hidden">⚡ Analisa & Cari Momen</button>
+      </div>
     </section>
 
-    <!-- Video Section -->
+    <!-- =============================================== TAB: AUTO =============================================== -->
+    <section class="card hidden" id="autoPanel">
+      <div class="auto-settings">
+        <label>
+          Durasi clip:
+          <select id="clipLen">
+            <option value="15">15 detik (super sunyi)</option>
+            <option value="30">30 detik</option>
+            <option value="40" selected>40 detik (default TikTok)</option>
+            <option value="60">60 detik</option>
+            <option value="90">90 detik</option>
+          </select>
+        </label>
+        <label class="chk">
+          <input type="checkbox" id="vertical" />
+          📱 Export vertikal 9:16 (Shorts/Reels/TikTok)
+        </label>
+      </div>
+      <div id="autoResults"></div>
+      <div id="autoLoading" class="hidden">
+        <div class="spinner"></div>
+        <span id="autoLoadingText">Mengunduh & analisa audio…</span>
+      </div>
+      <div id="autoError" class="error hidden"></div>
+    </section>
+
+    <!-- =============================================== TAB: MANUAL =============================================== -->
     <section class="card hidden" id="videoSection">
       <div class="video-preview">
-        <img id="thumb" alt="thumbnail" />
+        <img id="thumb" alt="thumbnail " />
         <div class="video-meta">
           <h2 id="title">—</h2>
           <p id="channel">—</p>
@@ -73,17 +108,15 @@
       <div id="clipError" class="error hidden"></div>
     </section>
 
-    <!-- Cookie Setup -->
     <section class="card cookie-card">
       <details>
         <summary>⚙️ Video gagal diunduh? Setup cookies YouTube</summary>
         <p>
-          YouTube memblokir akses dari server cloud. Upload file <code>cookies.txt</code>
-          dari browser kamu (ekstensi <i>Get cookies.txt</i>), atau jalankan
-          <code>node setup-cookies.js</code> di terminal.
+          YouTube memblokir server cloud. Upload file <code>cookies.txt</code>
+          dari browser kamu, atau jalankan <code>node setup-cookies.js</code>.
         </p>
         <div class="row">
-          <input type="file" id="cookieInput" accept=".txt" />
+          <input type="file" id="cookieInput" accept=".txt " />
           <button id="cookieBtn" class="btn ghost">Upload</button>
         </div>
         <div id="cookieStatus"></div>
@@ -92,8 +125,8 @@
 
     <footer>
       <p class="hint">
-        💡 Tips: klik play di player, lalu saat momen yang diinginkan muncul, tekan
-        <b>I</b> untuk mark mulai, <b>O</b> untuk mark selesai.
+        ⚡ <b>Auto Clip</b> — AI menganalisa energi audio-video, nyari momen paling hidup, di-rank dari yang paling menarik.
+        <br>✂️ <b>Clip Manual</b> — kamu atur sendiri rentangnya. Tekan <b>I</b> / <b>O</b> saat video berjalan.
       </p>
     </footer>
   </main>

@@ -201,6 +201,121 @@ app.get('/api/health', (_, res) => {
   });
 });
 
+// ── moment-iq: local AI engine ──
+const { findBestMoments } = require('./lib/moment-iq');
+
+// ── GET /api/auto-clip — analisa & cari momen terbaik ──
+app.get('/api/auto-clip', async (req, res) => {
+  const { url, length } = req.query;
+  const videoId = parseVideoId(url);
+  if (!videoId) return res.status(400).json({ error: 'Link YouTube tidak valid' });
+
+  const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const rawFile = path.join(TEMP_DIR, `auto-${videoId}-${Date.now()}.mp4`);
+  const hasCookies = fs.existsSync(COOKIES_FILE);
+  const clipLen = Math.min(90, Math.max(15, parseInt(length) || 40));
+
+  try {
+    console.log(`[auto-clip] ${videoId} len=${clipLen}s`);
+
+    // 1) Download resolusi rendah (audio yang penting utk analisa)
+    await run('yt-dlp', [
+      '-f', 'b[height<=360]/b/wv',
+      '-o', rawFile,
+      '--no-playlist', '--no-warnings', '--no-overwrites',
+      ...(['--cookies', COOKIES_FILE].filter(() => hasCookies)),
+      ytUrl,
+    ]);
+
+    // 2) Analisa energi audio → momen terbaik
+    const { moments, duration } = await findBestMoments(rawFile, { clipLen, topN: 5 });
+    fs.unlink(rawFile, () => {});
+
+    res.json({
+      videoId,
+      url: ytUrl,
+      duration,
+      clips: moments,
+    });
+  } catch (e) {
+    console.error('[/api/auto-clip]', e.message);
+    fs.unlink(rawFile, () => {});
+    const blocked = e.message.includes('Sign in') || e.message.includes('Login') ||
+                    e.message.includes('HTTP Error 400');
+    res.status(500).json({
+      error: blocked
+        ? 'Server ini (IP datacenter) diblokir YouTube. Jalankan di komputer lokal / upload cookies.'
+        : ('Gagal analisa video: ' + e.message.slice(0, 200)),
+    });
+  }
+});
+
+// ── GET /api/auto-export — download 1 momen jadi file clip ──
+app.get('/api/auto-export', async (req, res) => {
+  const { url, start, end, vertical } = req.query;
+  const videoId = parseVideoId(url);
+  if (!videoId) return res.status(400).json({ error: 'Link tidak valid' });
+
+  const startSec = Math.max(0, parseFloat(start) || 0);
+  const endSec = parseFloat(end) || startSec + 30;
+  if (endSec <= startSec) return res.status(400).json({ error: 'end harus > start' });
+
+  const ytUrl = `https://www.youtube.com/watch?v=${videoId}`;
+  const outFile = path.join(TEMP_DIR, `exp-${videoId}-${Date.now()}.mp4`);
+  const hasCookies = fs.existsSync(COOKIES_FILE);
+  const height = vertical === '1' ? '1080' : '720';
+
+  try {
+    console.log(`[auto-export] ${videoId} ${startSec}"s→${endSec}s vertical=${vertical}`);
+
+    // 1) download
+    await run('yt-dlp', [
+      '-f', `bv*[height<=${height}]+ba/b[height<=${height}]/b`,
+      '-o', outFile,
+      '--no-playlist', '--no-warnings', '--no-overwrites',
+      '--merge-output-format', 'mp4',
+      ...(['--cookies', COOKIES_FILE].filter(() => hasCookies)),
+      ytUrl,
+    ]);
+
+    // 2) cut — 9:16 needs reencode, landscape copy
+    const cutFile = path.join(TEMP_DIR, `cut-${videoId}-${Date.now()}.mp4`);
+    const ffmpegArgs = ['-y', '-ss', String(startSec), '-i', outFile,
+      '-t', String(endSec - startSec)];
+
+    if (vertical === '1') {
+      ffmpegArgs.push(
+        '-vf', 'crop=ih*9/16:ih,scale=720:1280,setsar=1',
+        '-c:v', 'libx264', '-preset', 'faster', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k',
+      );
+    } else {
+      ffmpegArgs.push('-c', 'copy');
+    }
+    ffmpegArgs.push('-movflags', '+faststart', cutFile);
+    await run('ffmpeg', ffmpegArgs);
+    fs.unlink(outFile, () => {});
+
+    const mode = vertical === '1' ? 'vertical-9x16' : 'horizontal';
+    res.download(cutFile, `clip-${videoId}-${Math.round(startSec)}s-${mode}.mp4`, (err) => {
+      setTimeout(() => {
+        fs.unlink(outFile, () => {});
+        fs.unlink(cutFile, () => {});
+      }, 120_000);
+      if (err && !res.headersSent) res.status(500).json({ error: 'Gagal kirim file' });
+    });
+  } catch (e) {
+    console.error('[/api/auto-export]', e.message);
+    fs.unlink(outFile, () => {});
+    res.status(500).json({
+      error: e.message.includes('Sign in')
+        ? 'Diblokir YouTube — IP datacenter. Jalankan lokal / upload cookies.'
+        : 'Gagal export: ' + e.message.slice(0, 200),
+    });
+  }
+});
+
+
 app.listen(PORT, () => {
   console.log(`\n🎬 YouTube Clipper jalan di http://localhost:${PORT}\n`);
   console.log('   Catatan: Jika YouTube blokir download, cek bagian SETUP COOKIES di README.\n');

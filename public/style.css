@@ -231,6 +231,144 @@ footer { text-align: center; margin-top: 24px; }
 }
 #cookieStatus { margin-top: 8px; font-size: 0.82rem; }
 
+/* ---- Tabs ---- */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 12px;
+  background: var(--surface2);
+  padding: 4px;
+  border-radius: var(--radius);
+}
+.tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.tab.active { background: var(--accent); color: #fff; }
+.tab:hover:not(.active) { color: var(--text); }
+
+.action-row { margin-top: 10px; }
+.action-row .btn { flex: 1; }
+.hidden { display: none !important; }
+
+/* ---- Auto Clip ---- */
+.auto-settings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 18px;
+  font-size: 0.88rem;
+}
+.auto-settings label { display: flex; align-items: center; gap: 8px; }
+.auto-settings select {
+  background: var(--surface2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-family: inherit;
+  font-size: 0.85rem;
+  outline: none;
+}
+.auto-settings select:focus { border-color: var(--accent); }
+.auto-settings .chk input { accent-color: var(--accent); }
+
+.auto-results-header { margin-bottom: 14px; }
+.auto-results-header h3 { font-size: 1rem; color: #fff; }
+.auto-results-header p  { font-size: 0.8rem; color: var(--text-dim); margin-top: 4px; }
+
+#autoLoading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  color: var(--text-dim);
+  font-size: 0.88rem;
+}
+
+.no-res { text-align: center; color: var(--text-dim); font-size: 0.9rem; padding: 20px; }
+
+.clips-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.clip-card {
+  --score-color: var(--accent);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--score-color);
+  border-radius: var(--radius);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.clip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.clip-rank {
+  background: var(--score-color);
+  color: #000;
+  font-size: 0.75rem;
+  font-weight: 800;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.clip-badge {
+  font-size: 0.72rem;
+  background: #ffd700;
+  color: #000;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: auto;
+}
+.clip-score {
+  font-size: 0.9rem;
+  font-weight: 800;
+  margin-left: auto;
+}
+.clip-badge + .clip-score { margin-left: 0; }
+
+.clip-time b { font-size: 0.92rem; color: #fff; }
+.clip-time small { color: var(--text-dim); margin-left: 6px; }
+.clip-why { font-size: 0.8rem; color: var(--text-dim); line-height: 1.4; }
+
+.clip-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: auto;
+}
+.clip-actions .btn {
+  flex: 1;
+  text-decoration: none;
+  text-align: center;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+}
+
+/* ---- Manual tab originally used .hidden via JS ---- */
+#videoSection[data-hidden="1"] { display: none; }
+
 /* ---- Screen-reader only ---- */
 .sr-only {
   position: absolute;
