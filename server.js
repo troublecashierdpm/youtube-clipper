@@ -9,36 +9,68 @@ const https = require('https');
 const crypto = require('crypto');
 
 // ── Resolve binari: yt-dlp & ffmpeg bisa beda lokasi antar OS / Python setup ──
-function findBinary(name, candidates) {
+function findBinary(name, extraDirs = []) {
   const isWin = process.platform === 'win32';
   const ext = isWin ? '.exe' : '';
-  for (const dir of candidates) {
+
+  // 1) PATH dari env (sama seperti yang dilihat shell)
+  const pathDirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+  // 2) Lokasi umum tambahan (pip user, pipx, winget, dsb.)
+  const HOME = process.env.HOME || process.env.USERPROFILE || '';
+  const winWinget = process.env.localappdata
+    ? path.join(process.env.localappdata, 'Microsoft', 'WinGet', 'Links') : '';
+  const winPy = process.env.APPDATA
+    ? path.join(process.env.APPDATA, 'Python', 'Scripts') : '';
+  const commonDirs = [
+    HOME && path.join(HOME, '.local', 'bin'),        // pip install --user (Linux)
+    HOME && path.join(HOME, '.local', 'pipx', 'bin'),// pipx
+    HOME && path.join(HOME, 'bin'),
+    winPy, winWinget,
+    '/usr/local/bin', '/usr/bin', '/snap/bin', '/opt/homebrew/bin',
+    '/usr/local/sbin', '/sbin', '/bin',
+  ].filter(Boolean);
+
+  // 3) Dir khusus caller (mis. FFMPEG biasanya di tempat sama dgn yt-dlp)
+  for (const dir of [...extraDirs, ...pathDirs, ...commonDirs]) {
+    if (!dir) continue;
     const full = path.join(dir, name + ext);
     if (fs.existsSync(full)) return full;
   }
-  return name; // fallback: biarkan PATH yang resolve
+  return null; // tidak ketemu
 }
 
-const HOME = process.env.HOME || process.env.USERPROFILE || '';
-const WIN_USSH = process.env.localappdata ? path.join(process.env.localappdata, 'Microsoft', 'WinGet', 'Links') : '';
-const WIN_PY = process.env.APPDATA ? path.join(process.env.APPDATA, 'Python', 'Scripts') : '';
+const YTDLP_FOUND = findBinary('yt-dlp');
+// ambil dir yt-dlp sebagai kandidat ffmpeg/S
+const YTDLP_DIR = YTDLP_FOUND ? path.dirname(YTDLP_FOUND) : '';
+const FFMPEG_FOUND = findBinary('ffmpeg', YTDLP_DIR ? [YTDLP_DIR] : []);
 
-const YTDLP_PATHS = [
-  HOME && path.join(HOME, '.local', 'bin'),
-  WIN_PY,
-  WIN_USSH,
-  '/usr/local/bin', '/usr/bin', '/snap/bin',
-].filter(Boolean);
+function missingMsg(name) {
+  return name === 'yt-dlp'
+    ? [
+        '❌ yt-dlp TIDAK DITEMUKAN di mesin ini.',
+        '   Install dulu, salah satu:',
+        '     pip install -U yt-dlp',
+        '     python3 -m pip install --break-system-packages yt-dlp',
+        '     pipx install yt-dlp',
+        '     winget install yt-dlp.yt-dlp      (Windows)',
+        '     brew install yt-dlp               (macOS)',
+        '     sudo apt install yt-dlp           (Debian/Ubuntu)',
+      ].join('\n')
+    : [
+        '❌ ffmpeg TIDAK DITEMUKAN di mesin ini.',
+        '   Install dulu:',
+        '     winget install ffmpeg   (Windows)',
+        '     brew install ffmpeg     (macOS)',
+        '     sudo apt install ffmpeg (Debian/Ubuntu)',
+      ].join('\n');
+}
 
-const FFMPEG_PATHS = [
-  HOME && path.join(HOME, 'bin'),
-  WIN_USSH,
-  '/usr/local/bin', '/usr/bin', '/snap/bin',
-].filter(Boolean);
-
-const YT_DLP = findBinary('yt-dlp', YTDLP_PATHS);
-const FFMPEG = findBinary('ffmpeg', FFMPEG_PATHS);
-console.log(`🔧 yt-dlp → ${YT_DLP}   ffmpeg → ${FFMPEG}`);
+const YT_DLP = YTDLP_FOUND || 'yt-dlp';
+const FFMPEG = FFMPEG_FOUND || 'ffmpeg';
+console.log(`🔧 yt-dlp  → ${YTDLP_FOUND || '❌ TIDAK KETEMU'}`);
+console.log(`🔧 ffmpeg  → ${FFMPEG_FOUND || '❌ TIDAK KETEMU'}`);
+if (!YTDLP_FOUND) console.log(missingMsg('yt-dlp'));
+if (!FFMPEG_FOUND) console.log(missingMsg('ffmpeg'));
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -54,11 +86,32 @@ app.use(express.static(path.join(__dirname, 'public')));
 function run(cmd, args) {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: 600_000 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`${err.message}\n${stderr}`.slice(0, 800)));
+      if (err) {
+        if (err.code === 'ENOENT') {
+          return reject(new Error(
+            `ENOENT: '${cmd}' tidak ditemukan.\n${missingMsg(path.basename(cmd, '.exe'))}`
+          ));
+        }
+        reject(new Error(`${err.message}\n${stderr}`.slice(0, 800)));
+      }
       else resolve(stdout);
     });
   });
 }
+
+// ── Self-test saat startup: binary benar-benar bisa jalan ──
+(function selfTest() {
+  if (!YTDLP_FOUND && !FFMPEG_FOUND) return; // pesan error sudah dicetak di atas
+  try {
+    execFile(YT_DLP, ['--version'], { timeout: 15_000 }, (err, stdout) => {
+      if (err) {
+        console.log(`⚠️  yt-dlp tidak bisa dieksekusi: ${err.code || err.message}\n   (cek ulang install — lihat instruksi di atas jika ada)`);
+      } else {
+        console.log(`✅ yt-dlp v${String(stdout).trim()}`);
+      }
+    });
+  } catch (_) {}
+})();
 
 
 // ── Helper: https GET ──
